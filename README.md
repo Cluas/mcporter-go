@@ -411,6 +411,7 @@ Set `MCPORTER_CONFIG=~/.mcporter/mcporter.json` in your shell profile when you w
 | `pnpm check` | Biome formatting plus Oxlint/tsgolint gate. |
 | `pnpm build` | TypeScript compilation (emits `dist/`). |
 | `pnpm test` | Vitest unit and integration suites (streamable HTTP fixtures included). |
+| `go test ./...` | Validates the in-progress Go CLI reimplementation under `cmd/mcporter`. |
 
 CI runs the same trio via GitHub Actions.
 
