@@ -2,6 +2,7 @@ package mcporter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,12 @@ import (
 const Version = "0.1.0-go"
 
 func Run(args []string, stdout, stderr io.Writer) int {
+	args, configPath, err := extractConfigPath(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "mcporter: %v\n", err)
+		return 1
+	}
+
 	if len(args) == 0 {
 		printHelp(stdout)
 		return 0
@@ -25,7 +32,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, Version)
 		return 0
 	case "list":
-		path := defaultConfigPath()
+		path := configPath
 		if len(args) > 1 {
 			path = args[1]
 		}
@@ -35,12 +42,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "call":
-		if len(args) < 3 {
-			fmt.Fprintln(stderr, "mcporter: usage: mcporter call <server> <tool>")
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "mcporter: usage: mcporter call <server> <tool> [arg=value...]")
 			return 1
 		}
-		fmt.Fprintf(stderr, "mcporter: call is not implemented yet in Go (requested %s.%s)\n", args[1], args[2])
-		return 1
+		if err := planCall(configPath, args[1:], stdout); err != nil {
+			fmt.Fprintf(stderr, "mcporter: %v\n", err)
+			return 1
+		}
+		return 0
 	default:
 		fmt.Fprintf(stderr, "mcporter: unknown command %q\n", args[0])
 		printHelp(stderr)
@@ -95,14 +105,9 @@ func (c *commandValue) UnmarshalJSON(data []byte) error {
 }
 
 func listServers(path string, out io.Writer) error {
-	data, err := os.ReadFile(path)
+	cfg, err := loadConfig(path)
 	if err != nil {
 		return err
-	}
-
-	var cfg configFile
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("invalid config JSON: %w", err)
 	}
 
 	if len(cfg.MCPServers) == 0 {
@@ -110,13 +115,7 @@ func listServers(path string, out io.Writer) error {
 		return nil
 	}
 
-	names := make([]string, 0, len(cfg.MCPServers))
-	for name := range cfg.MCPServers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
+	for _, name := range sortedServerNames(cfg) {
 		srv := cfg.MCPServers[name]
 		transport := "stdio"
 		endpoint := commandSummary(srv)
@@ -137,6 +136,98 @@ func listServers(path string, out io.Writer) error {
 	return nil
 }
 
+func planCall(configPath string, args []string, out io.Writer) error {
+	serverName, toolName, toolArgs, err := parseCallInput(args)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+
+	srv, ok := cfg.MCPServers[serverName]
+	if !ok {
+		return fmt.Errorf("unknown server %q (available: %s)", serverName, strings.Join(sortedServerNames(cfg), ", "))
+	}
+
+	transport := "stdio"
+	endpoint := commandSummary(srv)
+	if strings.TrimSpace(srv.BaseURL) != "" {
+		transport = "http"
+		endpoint = srv.BaseURL
+	}
+	if endpoint == "" {
+		endpoint = "(unspecified)"
+	}
+
+	if len(toolArgs) == 0 {
+		fmt.Fprintf(out, "planned call %s.%s via %s %s\n", serverName, toolName, transport, endpoint)
+		return nil
+	}
+	fmt.Fprintf(out, "planned call %s.%s via %s %s args=%s\n", serverName, toolName, transport, endpoint, strings.Join(toolArgs, " "))
+	return nil
+}
+
+func parseCallInput(args []string) (serverName string, toolName string, toolArgs []string, err error) {
+	if len(args) == 0 {
+		return "", "", nil, errors.New("usage: mcporter call <server> <tool> [arg=value...]")
+	}
+
+	if strings.Contains(args[0], ".") {
+		parts := strings.SplitN(args[0], ".", 2)
+		if parts[0] == "" || parts[1] == "" {
+			return "", "", nil, errors.New("usage: mcporter call <server> <tool> [arg=value...]")
+		}
+		return parts[0], parts[1], args[1:], nil
+	}
+
+	if len(args) < 2 {
+		return "", "", nil, errors.New("usage: mcporter call <server> <tool> [arg=value...]")
+	}
+	return args[0], args[1], args[2:], nil
+}
+
+func loadConfig(path string) (configFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return configFile{}, err
+	}
+
+	var cfg configFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return configFile{}, fmt.Errorf("invalid config JSON: %w", err)
+	}
+	return cfg, nil
+}
+
+func sortedServerNames(cfg configFile) []string {
+	names := make([]string, 0, len(cfg.MCPServers))
+	for name := range cfg.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func extractConfigPath(args []string) ([]string, string, error) {
+	configPath := defaultConfigPath()
+	remaining := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] != "--config" {
+			remaining = append(remaining, args[i])
+			continue
+		}
+		if i+1 >= len(args) {
+			return nil, "", errors.New("--config requires a path")
+		}
+		configPath = args[i+1]
+		i++
+	}
+	return remaining, configPath, nil
+}
+
 func commandSummary(cfg serverConfig) string {
 	if len(cfg.Command.parts) == 0 {
 		return ""
@@ -148,6 +239,9 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "mcporter-go")
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  mcporter list [config-path]")
-	fmt.Fprintln(w, "  mcporter call <server> <tool>")
+	fmt.Fprintln(w, "  mcporter call <server> <tool> [arg=value...]")
+	fmt.Fprintln(w, "  mcporter call <server.tool> [arg=value...]")
+	fmt.Fprintln(w, "Global flags:")
+	fmt.Fprintln(w, "  --config <path>")
 	fmt.Fprintln(w, "  mcporter version")
 }

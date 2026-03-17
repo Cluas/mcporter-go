@@ -43,15 +43,74 @@ func TestRunListReadsConfig(t *testing.T) {
 	}
 }
 
-func TestRunCallNotImplementedYet(t *testing.T) {
+func TestRunCallPlansFromSeparateServerAndTool(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "mcporter.json")
+	content := `{
+  "mcpServers": {
+    "ctx": {
+      "baseUrl": "https://mcp.context7.com/mcp"
+    }
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
 	var stdout strings.Builder
 	var stderr strings.Builder
 
-	exitCode := Run([]string{"call", "ctx", "resolve"}, &stdout, &stderr)
+	exitCode := Run([]string{"--config", configPath, "call", "ctx", "resolve-library-id", "libraryName=react"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "planned call ctx.resolve-library-id via http https://mcp.context7.com/mcp args=libraryName=react") {
+		t.Fatalf("unexpected call plan output: %q", stdout.String())
+	}
+}
+
+func TestRunCallAcceptsDottedTarget(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "mcporter.json")
+	content := `{
+  "mcpServers": {
+    "ctx": {
+      "baseUrl": "https://mcp.context7.com/mcp"
+    }
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+
+	exitCode := Run([]string{"--config", configPath, "call", "ctx.resolve-library-id"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "planned call ctx.resolve-library-id via http https://mcp.context7.com/mcp") {
+		t.Fatalf("unexpected call plan output: %q", stdout.String())
+	}
+}
+
+func TestRunCallReturnsUnknownServer(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "mcporter.json")
+	content := `{"mcpServers":{"ctx":{"baseUrl":"https://mcp.context7.com/mcp"}}}`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+
+	exitCode := Run([]string{"--config", configPath, "call", "missing", "resolve"}, &stdout, &stderr)
 	if exitCode == 0 {
 		t.Fatalf("expected non-zero exit code")
 	}
-	if !strings.Contains(stderr.String(), "not implemented yet") {
-		t.Fatalf("expected not implemented message, got %q", stderr.String())
+	if !strings.Contains(stderr.String(), `unknown server "missing"`) {
+		t.Fatalf("expected unknown server message, got %q", stderr.String())
 	}
 }
