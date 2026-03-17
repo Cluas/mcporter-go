@@ -113,4 +113,7 @@ func TestRunCallReturnsUnknownServer(t *testing.T) {
 	if !strings.Contains(stderr.String(), `unknown server "missing"`) {
 		t.Fatalf("expected unknown server message, got %q", stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "available: ctx") {
+		t.Fatalf("expected available server list in error, got %q", stderr.String())
+	}
 }
