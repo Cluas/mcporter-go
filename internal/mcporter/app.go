@@ -2,7 +2,6 @@ package mcporter
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,10 +57,41 @@ type configFile struct {
 }
 
 type serverConfig struct {
-	Description string   `json:"description"`
-	BaseURL     string   `json:"baseUrl"`
-	Command     any      `json:"command"`
-	Args        []string `json:"args"`
+	Description string       `json:"description"`
+	BaseURL     string       `json:"baseUrl"`
+	Command     commandValue `json:"command"`
+	Args        []string     `json:"args"`
+}
+
+type commandValue struct {
+	parts []string
+}
+
+func (c *commandValue) UnmarshalJSON(data []byte) error {
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		trimmed := strings.TrimSpace(asString)
+		if trimmed == "" {
+			c.parts = nil
+			return nil
+		}
+		c.parts = []string{trimmed}
+		return nil
+	}
+
+	var asArray []string
+	if err := json.Unmarshal(data, &asArray); err == nil {
+		parts := make([]string, 0, len(asArray))
+		for _, item := range asArray {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				parts = append(parts, trimmed)
+			}
+		}
+		c.parts = parts
+		return nil
+	}
+
+	return fmt.Errorf("command must be a string or string array, got: %s", strings.TrimSpace(string(data)))
 }
 
 func listServers(path string, out io.Writer) error {
@@ -72,7 +102,7 @@ func listServers(path string, out io.Writer) error {
 
 	var cfg configFile
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return errors.New("invalid config JSON")
+		return fmt.Errorf("invalid config JSON: %w", err)
 	}
 
 	if len(cfg.MCPServers) == 0 {
@@ -108,20 +138,10 @@ func listServers(path string, out io.Writer) error {
 }
 
 func commandSummary(cfg serverConfig) string {
-	switch v := cfg.Command.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	case []any:
-		parts := make([]string, 0, len(v))
-		for _, item := range v {
-			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
-				parts = append(parts, text)
-			}
-		}
-		return strings.Join(parts, " ")
-	default:
+	if len(cfg.Command.parts) == 0 {
 		return ""
 	}
+	return strings.Join(cfg.Command.parts, " ")
 }
 
 func printHelp(w io.Writer) {

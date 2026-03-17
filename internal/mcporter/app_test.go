@@ -10,7 +10,18 @@ import (
 func TestRunListReadsConfig(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "mcporter.json")
-	content := `{"mcpServers":{"ctx":{"description":"Docs","baseUrl":"https://mcp.context7.com/mcp"},"local":{"command":"npx","args":["-y","my-server"]}}}`
+	content := `{
+  "mcpServers": {
+    "ctx": {
+      "description": "Docs",
+      "baseUrl": "https://mcp.context7.com/mcp"
+    },
+    "local": {
+      "command": "npx",
+      "args": ["-y", "my-server"]
+    }
+  }
+}`
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
