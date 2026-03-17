@@ -1,12 +1,15 @@
 package mcporter
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -152,21 +155,148 @@ func planCall(configPath string, args []string, out io.Writer) error {
 		return fmt.Errorf("unknown server %q (available: %s)", serverName, strings.Join(sortedServerNames(cfg), ", "))
 	}
 
-	transport := "stdio"
-	endpoint := commandSummary(srv)
-	if strings.TrimSpace(srv.BaseURL) != "" {
-		transport = "http"
-		endpoint = srv.BaseURL
-	}
-	if endpoint == "" {
-		endpoint = "(unspecified)"
+	if strings.TrimSpace(srv.BaseURL) == "" {
+		return fmt.Errorf("server %q uses stdio and call is not implemented yet in Go", serverName)
 	}
 
-	if len(toolArgs) == 0 {
-		fmt.Fprintf(out, "planned call %s.%s via %s %s\n", serverName, toolName, transport, endpoint)
-		return nil
+	arguments, err := parseToolArgs(toolArgs)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(out, "planned call %s.%s via %s %s args=%s\n", serverName, toolName, transport, endpoint, strings.Join(toolArgs, " "))
+
+	return callToolHTTP(http.DefaultClient, srv.BaseURL, toolName, arguments, out)
+}
+
+func parseToolArgs(toolArgs []string) (map[string]any, error) {
+	arguments := make(map[string]any, len(toolArgs))
+	for _, arg := range toolArgs {
+		key, rawValue, ok := strings.Cut(arg, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("invalid tool argument %q (expected key=value)", arg)
+		}
+		arguments[strings.TrimSpace(key)] = coerceCallArgValue(strings.TrimSpace(rawValue))
+	}
+	return arguments, nil
+}
+
+func coerceCallArgValue(raw string) any {
+	lower := strings.ToLower(raw)
+	switch lower {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+
+	if i, err := strconv.Atoi(raw); err == nil {
+		return i
+	}
+	if f, err := strconv.ParseFloat(raw, 64); err == nil && strings.Contains(raw, ".") {
+		return f
+	}
+
+	var parsed any
+	if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+		return parsed
+	}
+
+	return raw
+}
+
+type callRequest struct {
+	JSONRPC string            `json:"jsonrpc"`
+	ID      int               `json:"id"`
+	Method  string            `json:"method"`
+	Params  callRequestParams `json:"params"`
+}
+
+type callRequestParams struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+type callResponse struct {
+	Result json.RawMessage `json:"result"`
+	Error  *rpcError       `json:"error"`
+}
+
+type rpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type callResult struct {
+	Content []callContent `json:"content"`
+}
+
+type callContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+func callToolHTTP(client *http.Client, baseURL, toolName string, arguments map[string]any, out io.Writer) error {
+	payload, err := json.Marshal(callRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: callRequestParams{
+			Name:      toolName,
+			Arguments: arguments,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal call request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, baseURL, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build call request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("call %q failed: %w", toolName, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read call response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("call %q failed with HTTP %d: %s", toolName, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var rpc callResponse
+	if err := json.Unmarshal(body, &rpc); err != nil {
+		return fmt.Errorf("decode call response: %w", err)
+	}
+	if rpc.Error != nil {
+		return fmt.Errorf("MCP error %d: %s", rpc.Error.Code, rpc.Error.Message)
+	}
+
+	var result callResult
+	if err := json.Unmarshal(rpc.Result, &result); err == nil && len(result.Content) > 0 {
+		lines := make([]string, 0, len(result.Content))
+		for _, item := range result.Content {
+			if item.Type == "text" && strings.TrimSpace(item.Text) != "" {
+				lines = append(lines, item.Text)
+			}
+		}
+		if len(lines) > 0 {
+			fmt.Fprintln(out, strings.Join(lines, "\n"))
+			return nil
+		}
+	}
+
+	formatted, err := json.MarshalIndent(rpc.Result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format call result: %w", err)
+	}
+	fmt.Fprintln(out, string(formatted))
 	return nil
 }
 
